@@ -1,6 +1,6 @@
 package testing
 
-import net.cakemc.repository.MavenRepositoryServer
+import net.cakemc.repository.network.MavenRepositoryServer
 import net.cakemc.repository.utils.PublicationHandler
 import java.io.File
 

@@ -3,4 +3,6 @@
 .vscode/
 build/
 out/
+maven-repository/
+
 **credentials.properties**
