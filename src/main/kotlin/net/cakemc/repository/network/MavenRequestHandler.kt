@@ -6,16 +6,18 @@ import io.netty.channel.SimpleChannelInboundHandler
 import io.netty.handler.codec.http.*
 import io.netty.handler.stream.ChunkedFile
 import io.netty.util.CharsetUtil
+import net.cakemc.repository.credentials.RepositoryCredentials
+import net.cakemc.repository.utils.GetRequestHandler
 import net.cakemc.repository.utils.PublicationHandler
-import java.io.File
 import java.io.RandomAccessFile
+import java.nio.file.Path
 import java.util.*
 
 class MavenRequestHandler(
-    private val baseDirectory: File,
-    private val username: String,
-    private val password: String,
-    private val handler: PublicationHandler
+    private val baseDirectory: Path,
+    private val credentials: RepositoryCredentials,
+    private val publicationHandler: PublicationHandler,
+    private val getRequestHandler: GetRequestHandler
 ) : SimpleChannelInboundHandler<FullHttpRequest>() {
 
     override fun channelRead0(ctx: ChannelHandlerContext, request: FullHttpRequest) {
@@ -27,37 +29,33 @@ class MavenRequestHandler(
     }
 
     private fun handlePutRequest(ctx: ChannelHandlerContext, request: FullHttpRequest) {
-        val authHeader = request.headers().get(HttpHeaders.Names.AUTHORIZATION)
+        val authHeader = request.headers().get("Authorization")
         if (authHeader == null || !isValidAuth(authHeader)) {
             sendError(ctx, HttpResponseStatus.UNAUTHORIZED)
             return
         }
 
         val uri = request.uri().removePrefix("/")
-        val targetFile = File(baseDirectory, uri).canonicalFile
+        val targetPath = baseDirectory.resolve(uri).normalize()
 
-        if (!targetFile.absolutePath.startsWith(baseDirectory.absolutePath)) {
+        if (!targetPath.startsWith(baseDirectory)) {
             sendError(ctx, HttpResponseStatus.FORBIDDEN)
             return
         }
 
-        if (!targetFile.parentFile.exists() && !targetFile.parentFile.mkdirs()) {
-            sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR)
-            return
-        }
-
         try {
-            val fileOutputStream = targetFile.outputStream()
-            val byteBuf = request.content()
+            val parentPath = targetPath.parent
+            if (parentPath != null && !parentPath.toFile().exists()) {
+                parentPath.toFile().mkdirs()
+            }
 
+            val byteBuf = request.content()
             val bytes = ByteArray(byteBuf.readableBytes())
             byteBuf.readBytes(bytes)
 
-            handler.accept(uri, bytes)
+            publicationHandler.accept(uri, bytes)
 
-            fileOutputStream.write(bytes)
-
-            fileOutputStream.close()
+            targetPath.toFile().writeBytes(bytes)
 
             sendResponse(ctx, HttpResponseStatus.CREATED)
         } catch (e: Exception) {
@@ -68,15 +66,17 @@ class MavenRequestHandler(
 
     private fun handleGetRequest(ctx: ChannelHandlerContext, request: FullHttpRequest) {
         val uri = request.uri().removePrefix("/")
-        val targetFile = File(baseDirectory, uri).canonicalFile
+        val targetPath = baseDirectory.resolve(uri).normalize()
 
-        if (!targetFile.absolutePath.startsWith(baseDirectory.absolutePath) || !targetFile.exists() || !targetFile.isFile) {
+        if (!targetPath.startsWith(baseDirectory) || !targetPath.toFile().exists() || !targetPath.toFile().isFile) {
             sendError(ctx, HttpResponseStatus.NOT_FOUND)
             return
         }
 
+        this.getRequestHandler.requestReceived(uri)
+
         try {
-            val randomAccessFile = RandomAccessFile(targetFile, "r")
+            val randomAccessFile = RandomAccessFile(targetPath.toFile(), "r")
             val fileLength = randomAccessFile.length()
 
             val response = DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK)
@@ -97,9 +97,9 @@ class MavenRequestHandler(
         if (authHeader.startsWith("Basic ")) {
             val base64Credentials = authHeader.substring(6)
             val decodedCredentials = String(Base64.getDecoder().decode(base64Credentials), CharsetUtil.UTF_8)
-            val credentials = decodedCredentials.split(":")
+            val split = decodedCredentials.split(":")
 
-            if (credentials.size == 2 && credentials[0] == username && credentials[1] == password) {
+            if (split.size == 2 && credentials.isValid(split)) {
                 return true
             }
         }

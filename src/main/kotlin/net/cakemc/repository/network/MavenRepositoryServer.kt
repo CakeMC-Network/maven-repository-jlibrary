@@ -2,6 +2,7 @@ package net.cakemc.repository.network
 
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelInitializer
+import io.netty.channel.EventLoopGroup
 import io.netty.channel.MultiThreadIoEventLoopGroup
 import io.netty.channel.epoll.Epoll
 import io.netty.channel.epoll.EpollIoHandler
@@ -10,41 +11,58 @@ import io.netty.channel.kqueue.KQueue
 import io.netty.channel.kqueue.KQueueIoHandler
 import io.netty.channel.kqueue.KQueueServerSocketChannel
 import io.netty.channel.nio.NioIoHandler
+import io.netty.channel.socket.ServerSocketChannel
 import io.netty.channel.socket.SocketChannel
 import io.netty.channel.socket.nio.NioServerSocketChannel
 import io.netty.handler.codec.http.HttpObjectAggregator
 import io.netty.handler.codec.http.HttpServerCodec
 import io.netty.handler.stream.ChunkedWriteHandler
+import net.cakemc.repository.AbstractRepositoryServer
+import net.cakemc.repository.credentials.RepositoryCredentials
+import net.cakemc.repository.utils.GetRequestHandler
 import net.cakemc.repository.utils.PublicationHandler
-import java.io.File
+import java.nio.file.Path
 
 
 class MavenRepositoryServer(
+    private val host: String,
     private val port: Int,
-    private val baseDirectory: File,
-    private val username: String,
-    private val password: String,
-    private val handler: PublicationHandler
-) {
+    private val baseDirectory: Path,
+    private val credentials: RepositoryCredentials,
+    private val publicationHandler: PublicationHandler,
+    private val getRequestHandler: GetRequestHandler
+): AbstractRepositoryServer() {
 
     companion object {
         val EPOLL: Boolean = Epoll.isAvailable()
         val KQUEUE: Boolean = KQueue.isAvailable()
     }
 
-    fun start() {
+    private var bossGroup: EventLoopGroup
+    private var workerGroup: EventLoopGroup
+    private val channel: Class<out ServerSocketChannel>
 
-        val ioHandlerFactory = if (EPOLL) (if (KQUEUE) KQueueIoHandler.newFactory() else
-            EpollIoHandler.newFactory()) else NioIoHandler.newFactory()
-        val bossGroup = MultiThreadIoEventLoopGroup(ioHandlerFactory)
-        val workerGroup = MultiThreadIoEventLoopGroup(ioHandlerFactory)
+    init {
+        val ioHandlerFactory = when {
+            EPOLL && KQUEUE -> KQueueIoHandler.newFactory()
+            EPOLL -> EpollIoHandler.newFactory()
+            else -> NioIoHandler.newFactory()
+        }
 
-         val channel = if (EPOLL) (if (KQUEUE) KQueueServerSocketChannel::class.java else
-             EpollServerSocketChannel::class.java) else NioServerSocketChannel::class.java
+        bossGroup = MultiThreadIoEventLoopGroup(ioHandlerFactory)
+        workerGroup = MultiThreadIoEventLoopGroup(ioHandlerFactory)
 
+        channel = when {
+            EPOLL && KQUEUE -> KQueueServerSocketChannel::class.java
+            EPOLL -> EpollServerSocketChannel::class.java
+            else -> NioServerSocketChannel::class.java
+        }
+    }
+
+    override fun start() {
         try {
             val bootstrap = ServerBootstrap()
-            bootstrap.group(bossGroup, workerGroup)
+                .group(bossGroup, workerGroup)
                 .channel(channel)
                 .childHandler(object : ChannelInitializer<SocketChannel>() {
                     override fun initChannel(ch: SocketChannel) {
@@ -56,19 +74,25 @@ class MavenRepositoryServer(
 
                         pipeline.addLast(
                             MavenRequestHandler(
-                            baseDirectory, username, password, handler
-                        )
+                                baseDirectory, credentials,
+                                publicationHandler, getRequestHandler
+                            )
                         )
                     }
 
                 })
 
-            val serverChannel = bootstrap.bind(port).sync().channel()
+            val serverChannel = bootstrap.bind(host, port).sync().channel()
             serverChannel.closeFuture().sync()
         } finally {
-            bossGroup.shutdownGracefully()
-            workerGroup.shutdownGracefully()
+            this.stop()
         }
     }
+
+    override fun stop() {
+        bossGroup.shutdownGracefully()
+        workerGroup.shutdownGracefully()
+    }
+
 }
 
