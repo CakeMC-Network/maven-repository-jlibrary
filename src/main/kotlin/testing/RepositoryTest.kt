@@ -10,7 +10,9 @@ object RepositoryTest {
 
     @JvmStatic
     fun main(args: Array<String>) {
-        val credentials = RepositoryCredentials("username", "password")
+        val credentials = RepositoryCredentials(
+            "username", "password"
+        )
 
         val publicationHandler = object : PublicationHandler {
 

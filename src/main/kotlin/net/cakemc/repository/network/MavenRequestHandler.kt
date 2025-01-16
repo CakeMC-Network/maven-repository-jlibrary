@@ -38,7 +38,9 @@ class MavenRequestHandler(
         val uri = request.uri().removePrefix("/")
         val targetPath = baseDirectory.resolve(uri).normalize()
 
-        if (!targetPath.startsWith(baseDirectory)) {
+        println(targetPath)
+
+        if (!targetPath.startsWith(baseDirectory.toFile().name)) {
             sendError(ctx, HttpResponseStatus.FORBIDDEN)
             return
         }
